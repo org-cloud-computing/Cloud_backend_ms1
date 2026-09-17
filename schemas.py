@@ -70,3 +70,13 @@ class PaginatedProductsResponse(BaseModel):
     limit: int
     total_pages: int
     data: List[ProductResponse]
+
+class ReservarStockRequest(BaseModel):
+    product_id: int
+    client_id: int
+    cantidad: int
+
+class ReservarStockResponse(BaseModel):
+    exito: bool
+    product_id: int
+    available_stock: int  # stock restante tras la reserva

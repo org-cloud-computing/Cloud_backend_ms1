@@ -9,13 +9,19 @@ from sqlalchemy import func
 import models
 import schemas
 from database import get_db, engine
+import requests
 
 models.Base.metadata.create_all(bind=engine)
+
+NODE_API_URL = "https://okj8uulv98.execute-api.us-east-1.amazonaws.com/ms2/clientes"
 
 app = FastAPI(
     title="MS1 - Catálogo e Inventario Amazon",
     description="Microservicio transaccional para productos, categorías y control de inventario por almacén/país.",
-    version="1.0.0"
+    version="1.0.0",
+    docs_url="/ms1/docs",
+    openapi_url="/ms1/openapi.json",
+    redoc_url="/ms1/redoc"
 )
 
 app.add_middleware(
@@ -29,16 +35,16 @@ app.add_middleware(
 # --- Método Auxiliar: Resolver País del Cliente por ID ---
 def get_client_country_by_id(client_id: int) -> str:
     """
-    Simula o resuelve la ubicación del cliente según su ID.
-    En entorno multicloud, esta función consulta el perfil del cliente.
+    Consulta el país del cliente consumiendo el endpoint de la API en Node.js.
     """
-    client_country_map = {
-        1: "Perú",
-        2: "Colombia",
-        3: "México",
-        4: "USA"
-    }
-    return client_country_map.get(client_id, "Perú")
+    response = requests.get(f"{NODE_API_URL}/{client_id}/pais", timeout=5)
+
+    if response.status_code == 404:
+        return "Perú"  # Fallback si el cliente no existe
+
+    response.raise_for_status()
+    data = response.json()
+    return data.get("pais", "Perú")
 
 
 # --- 1. HEALTH CHECK ---
@@ -187,6 +193,55 @@ def get_available_stock_by_client_country(
         "client_country": client_country,
         "available_stock": total_stock
     }
+
+@app.patch("/ms1/stock/reservar", response_model=schemas.ReservarStockResponse, tags=["Stock e Inventario"])
+def reservar_stock(payload: schemas.ReservarStockRequest, db: Session = Depends(get_db)):
+    client_country = get_client_country_by_id(payload.client_id)
+
+    # Bloqueo de fila para evitar condiciones de carrera entre checkouts concurrentes
+    stock_row = (
+        db.query(models.Stock)
+        .join(models.Warehouse, models.Stock.warehouse_id == models.Warehouse.warehouse_id)
+        .filter(models.Stock.product_id == payload.product_id)
+        .filter(models.Warehouse.location.ilike(f"%{client_country}%"))
+        .with_for_update()
+        .first()
+    )
+
+    if not stock_row or stock_row.available_stock < payload.cantidad:
+        raise HTTPException(status_code=409, detail="Stock insuficiente para reservar")
+
+    stock_row.available_stock -= payload.cantidad
+    stock_row.reserve_stock += payload.cantidad
+    db.commit()
+    db.refresh(stock_row)
+
+    return {
+        "exito": True,
+        "product_id": payload.product_id,
+        "available_stock": stock_row.available_stock
+    }
+
+@app.patch("/ms1/stock/liberar", response_model=schemas.ReservarStockResponse, tags=["Stock e Inventario"])
+def liberar_stock(payload: schemas.ReservarStockRequest, db: Session = Depends(get_db)):
+    client_country = get_client_country_by_id(payload.client_id)
+    stock_row = (
+        db.query(models.Stock)
+        .join(models.Warehouse, models.Stock.warehouse_id == models.Warehouse.warehouse_id)
+        .filter(models.Stock.product_id == payload.product_id)
+        .filter(models.Warehouse.location.ilike(f"%{client_country}%"))
+        .with_for_update()
+        .first()
+    )
+    if not stock_row:
+        raise HTTPException(404, "Stock no encontrado")
+
+    stock_row.available_stock += payload.cantidad
+    stock_row.reserve_stock = max(0, stock_row.reserve_stock - payload.cantidad)
+    db.commit()
+    db.refresh(stock_row)
+
+    return {"exito": True, "product_id": payload.product_id, "available_stock": stock_row.available_stock}
 
 
 # --- ENDPOINTS EXTRAS (CRUD COMPLETO Y ALMACENES) ---
