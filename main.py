@@ -13,7 +13,7 @@ import requests
 
 models.Base.metadata.create_all(bind=engine)
 
-NODE_API_URL = "https://okj8uulv98.execute-api.us-east-1.amazonaws.com/ms2/clientes"
+NODE_API_URL = "https://qjxnz9uqv9.execute-api.us-east-1.amazonaws.com/ms2/clientes"
 
 app = FastAPI(
     title="MS1 - Catálogo e Inventario Amazon",
